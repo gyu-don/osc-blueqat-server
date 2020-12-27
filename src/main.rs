@@ -12,7 +12,7 @@ use anyhow::{anyhow, bail, ensure};
 #[allow(unused_imports)]
 use log::{LevelFilter, info, warn};
 
-use message::Message;
+use message::{Response, Request};
 use rosc::{OscBundle, OscMessage, OscPacket};
 
 use lay::{Operations, gates::CliffordGate};
@@ -25,7 +25,7 @@ type Qubit = <BlueqatOperations as Operations>::Qubit;
 const QUEUE_LEN: usize = 100;
 const OSC_BUF_LEN: usize = 1000;
 
-async fn sender_loop(tx_addr: SocketAddr, mut chan_rx: mpsc::Receiver<Message>) -> anyhow::Result<()> {
+async fn sender_loop(tx_addr: SocketAddr, mut chan_rx: mpsc::Receiver<Response>) -> anyhow::Result<()> {
     let tx = UdpSocket::bind(tx_addr).await?;
     while let Some(msg) = chan_rx.recv().await {
         info!("host_sender_loop: Received from channel: {:?}", msg);
@@ -38,14 +38,14 @@ async fn sender_loop(tx_addr: SocketAddr, mut chan_rx: mpsc::Receiver<Message>) 
     bail!("host_sender_loop unexpected finished");
 }
 
-async fn receiver_loop(host_rx_addr: SocketAddr, chan_tx: mpsc::Sender<Message>) -> anyhow::Result<()> {
+async fn receiver_loop(host_rx_addr: SocketAddr, chan_tx: mpsc::Sender<Request>) -> anyhow::Result<()> {
     let rx = UdpSocket::bind(host_rx_addr).await?;
     let mut buf = vec![0; OSC_BUF_LEN];
     loop {
         info!("Receiving from {}...", host_rx_addr);
         let len = rx.recv(&mut buf).await?;
         let packet = rosc::decoder::decode(&buf[..len]).map_err(|e| anyhow!("{:?}", e))?;
-        let msg = Message::try_from(match packet {
+        let msg = Request::try_from(match packet {
             OscPacket::Message(msg) => {
                 warn!("Message without Bundle");
                 msg
@@ -64,23 +64,23 @@ async fn receiver_loop(host_rx_addr: SocketAddr, chan_tx: mpsc::Sender<Message>)
     }
 }
 
-async fn runner_loop(mut ops_rx: mpsc::Receiver<Message>, mut result_tx: mpsc::Sender<Message>) -> anyhow::Result<()> {
+async fn runner_loop(mut ops_rx: mpsc::Receiver<Request>, mut result_tx: mpsc::Sender<Response>) -> anyhow::Result<()> {
     let mut sim = BlueqatSimulator::new().unwrap();
     let mut ops = BlueqatOperations::new();
     let mut result = String::new();
     ops.initialize();
     while let Some(msg) = ops_rx.recv().await {
         match msg {
-            Message::X(_, n) => ops.x(n as Qubit),
-            Message::Y(_, n) => ops.y(n as Qubit),
-            Message::Z(_, n) => ops.z(n as Qubit),
-            Message::H(_, n) => ops.h(n as Qubit),
-            Message::CX(_, n1, _, n2) => ops.cx(n1 as Qubit, n2 as Qubit),
-            Message::Mz(_, n) => {
+            Request::X(_, n) => ops.x(n as Qubit),
+            Request::Y(_, n) => ops.y(n as Qubit),
+            Request::Z(_, n) => ops.z(n as Qubit),
+            Request::H(_, n) => ops.h(n as Qubit),
+            Request::CX(_, n1, _, n2) => ops.cx(n1 as Qubit, n2 as Qubit),
+            Request::Mz(_, n) => {
                 ops.measure(n as Qubit, ());
                 sim.send_receive(&ops, &mut result).await;
                 //let bit = (result.as_bytes()[n as usize] - b'0') as u32;
-                result_tx.send(0).await;
+                result_tx.send(Response::Mz(0, 0.0)).await?;
                 ops = BlueqatOperations::new();
                 result.clear();
             },
